@@ -1,3 +1,10 @@
+Ethereum Multisignature Wallet With Gas Token
+===================
+
+Work similar to Multisignature Wallet except owners can specify the amount of gas tokens to be burnt.
+It will help to reduce operational cost when gas price is high.
+
+
 Ethereum Multisignature Wallet
 ===================
 
