@@ -35,10 +35,13 @@ contract MultiSigWalletWithDailyLimitWithGasToken is MultiSigWalletWithGasToken 
         address[] _owners,
         uint _required,
         GasTokenInterface _gasToken,
+        uint64 _baseGasConsumption,
+        uint64 _burntGasConsumption,
+        uint64 _refundedGasPerToken,
         uint _dailyLimit
     )
         public
-        MultiSigWalletWithGasToken(_owners, _required, _gasToken)
+        MultiSigWalletWithGasToken(_owners, _required, _gasToken, _baseGasConsumption, _burntGasConsumption, _refundedGasPerToken)
     {
         dailyLimit = _dailyLimit;
     }
@@ -55,13 +58,13 @@ contract MultiSigWalletWithDailyLimitWithGasToken is MultiSigWalletWithGasToken 
 
     /// @dev Allows anyone to execute a confirmed transaction or ether withdraws until daily limit is reached.
     /// @param transactionId Transaction ID.
-    /// @param numGasBurn Number gas tokens to be burnt
-    function executeTransaction(uint transactionId, uint numGasBurn)
+    function executeTransaction(uint transactionId)
         public
         ownerExists(msg.sender)
         confirmed(transactionId, msg.sender)
         notExecuted(transactionId)
     {
+        uint gasBefore = msg.gas;
         Transaction storage txn = transactions[transactionId];
         bool _confirmed = isConfirmed(transactionId);
         if (_confirmed || txn.data.length == 0 && isUnderLimit(txn.value)) {
@@ -77,7 +80,7 @@ contract MultiSigWalletWithDailyLimitWithGasToken is MultiSigWalletWithGasToken 
                     spentToday -= txn.value;
             }
         }
-        freeGas(numGasBurn);
+        freeGas(gasBefore);
     }
 
     /*
