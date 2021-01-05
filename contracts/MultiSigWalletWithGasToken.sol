@@ -8,134 +8,91 @@ import "./MultiSigWallet.sol";
     Auto calculate the optimal amoun of gas tokens to be burnt
     Gas token in this contract will be burnt
     Need to increase gas limit for each operation so that it can burn gas tokens
+    Can use a single gas holder for all multisig
  */
 contract MultiSigWalletWithGasToken is MultiSigWallet {
 
-    // Total gas consumption for the tx:
-    // tx_gas + baseGasConsumption + x * burntGasConsumption where x is number of gas tokens that are burnt
-    // gas refunded: refundedGasPerToken * x
-    // refundedGasPerToken * x <= 1/2 * (tx_gas + baseGasConsumption + x * burntGasConsumption)
-    // example using GST2: https://gastoken.io/
-    // baseGasConsumption: 14,154
-    // burntGasConsumption: 6,870
-    // refundedGasPerToken: 24,000
-    struct GasTokenConfiguration {
-        GasTokenInterface gasToken;
-        uint64 baseGasConsumption;
-        uint64 burntGasConsumption;
-        uint64 refundedGasPerToken;
-    }
+    GasTokenInterface public gasToken;
+    address public gasHolder;
 
-    GasTokenConfiguration public gasTokenConfig;
+    modifier burnGasToken {
+        uint256 gasStart = msg.gas;
+        _;
+        uint256 gasAfter = msg.gas;
+        uint256 gasSpent = 21000 + gasStart - gasAfter + 16 * msg.data.length;
+        uint256 numberGasBurns = (gasSpent + 14154) / 41947;
+
+        uint256 safeNumberGas;
+        if (gasAfter >= 27710) {
+            safeNumberGas = (gasAfter - 27710) / 7020; // (1148 + 5722 + 150)
+        }
+        if (numberGasBurns > safeNumberGas) {
+            numberGasBurns = safeNumberGas;
+        }
+        if (numberGasBurns == 0) return;
+
+        if (gasHolder == address(this)) {
+            gasToken.freeUpTo(numberGasBurns);
+        } else {
+            gasToken.freeFromUpTo(gasHolder, numberGasBurns);
+        }
+    }
 
     function MultiSigWalletWithGasToken(
         address[] _owners,
         uint _required,
         GasTokenInterface _gasToken,
-        uint64 _baseGasConsumption,
-        uint64 _burntGasConsumption,
-        uint64 _refundedGasPerToken
+        address _gasHolder
     )
         public MultiSigWallet(_owners, _required)
     {
         require(_gasToken != address(0));
-        require(_baseGasConsumption > 0);
-        require(_burntGasConsumption > 0);
-        require(_refundedGasPerToken > _burntGasConsumption);
-
-        gasTokenConfig = GasTokenConfiguration({
-            gasToken: _gasToken,
-            baseGasConsumption: _baseGasConsumption,
-            burntGasConsumption: _burntGasConsumption,
-            refundedGasPerToken: _refundedGasPerToken
-        });
+        gasToken = _gasToken;
+        gasHolder = _gasHolder != address(0) ? _gasHolder : address(this);
     }
 
-    function updateGasToken(
+    /// @dev set _gasHolder == address(0) if want to use gas from this contract
+    function updateGasInfo(
         GasTokenInterface _gasToken,
-        uint64 _baseGasConsumption,
-        uint64 _burntGasConsumption,
-        uint64 _refundedGasPerToken
+        address _gasHolder
     ) public onlyWallet {
         require(_gasToken != address(0));
-        require(_baseGasConsumption > 0);
-        require(_burntGasConsumption > 0);
-        require(_refundedGasPerToken > _burntGasConsumption);
-
-        gasTokenConfig = GasTokenConfiguration({
-            gasToken: _gasToken,
-            baseGasConsumption: _baseGasConsumption,
-            burntGasConsumption: _burntGasConsumption,
-            refundedGasPerToken: _refundedGasPerToken
-        });
+        gasToken = _gasToken;
+        gasHolder = _gasHolder != address(0) ? _gasHolder : address(this);
     }
 
-    /// @dev Allows an owner to submit and confirm a transaction.
+    /// @dev Allows an owner to submit and confirm a transaction with burning gas
     /// @param destination Transaction target address.
     /// @param value Transaction ether value.
     /// @param data Transaction data payload.
-    function submitTransaction(address destination, uint value, bytes data)
-        public
+    function submitTransactionWithGasToken(address destination, uint value, bytes data)
+        public burnGasToken
         returns (uint transactionId)
     {
-        uint gasBefore = msg.gas;
         transactionId = super.submitTransaction(destination, value, data);
-        freeGas(gasBefore);
     }
 
-    /// @dev Allows an owner to confirm a transaction.
+    /// @dev Allows an owner to confirm a transaction with burning gas
     /// @param transactionId Transaction ID.
-    function confirmTransaction(uint transactionId)
-        public
+    function confirmTransactionWithGasToken(uint transactionId)
+        public burnGasToken
     {
-        uint gasBefore = msg.gas;
         super.confirmTransaction(transactionId);
-        freeGas(gasBefore);
     }
 
-    /// @dev Allows an owner to revoke a confirmation for a transaction.
+    /// @dev Allows an owner to revoke a confirmation for a transaction with burning gas
     /// @param transactionId Transaction ID.
-    function revokeConfirmation(uint transactionId)
-        public
+    function revokeConfirmationWithGasToken(uint transactionId)
+        public burnGasToken
     {
-        uint gasBefore = msg.gas;
         super.revokeConfirmation(transactionId);
-        freeGas(gasBefore);
     }
 
-    /// @dev Allows anyone to execute a confirmed transaction.
+    /// @dev Allows anyone to execute a confirmed transaction with burning gas
     /// @param transactionId Transaction ID.
-    function executeTransaction(uint transactionId)
-        public
+    function executeTransactionWithGasToken(uint transactionId)
+        public burnGasToken
     {
-        uint gasBefore = msg.gas;
         super.executeTransaction(transactionId);
-        freeGas(gasBefore);
-    }
-
-    function freeGas(uint gasBefore) internal {
-        uint safe_num_tokens = 0;
-        uint gasAfter = msg.gas;
-
-        GasTokenConfiguration memory config = gasTokenConfig;
-
-        // total gas use: gasBefore - gasAfter + baseGasConsumption + x * burntGasConsumption
-        // refunded: x * refundedGasPerToken
-        // x * refundedGasPerToken <= 1/2 * (gasBefore - gasAfter + baseGasConsumption + x * burntGasConsumption)
-        // x <= (gasBefore - gasAfter + baseGasConsumption) / (2 * refundedGasPerToken - burntGasConsumption)
-        uint num_tokens = (gasBefore - gasAfter + uint(config.baseGasConsumption))
-            / uint(2 * config.refundedGasPerToken - config.burntGasConsumption); 
-
-        if (gasAfter >= 27710) {
-            safe_num_tokens = (gasAfter - 27710) / 7020; // (1148 + 5722 + 150);
-        }
-
-        if (num_tokens > safe_num_tokens) {
-            num_tokens = safe_num_tokens;
-        }
-
-        if (num_tokens > 0) {
-            config.gasToken.freeUpTo(num_tokens);
-        }
     }
 }
